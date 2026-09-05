@@ -9,6 +9,168 @@ static const int g_keymapLen = 114; // Modify this when you change anything in g
 static int g_capsLock = 0;
 static int g_lMouseDown = 0;
 static int g_rMouseDown = 0;
+static CGEventFlags g_modifierFlags = 0;
+static unsigned char g_modifierDown[256] = { 0 };
+static uint16_t g_pendingHighSurrogate = 0;
+static int g_unicodeShiftInjected = 0;
+
+static int IsSimulatorFrontmost(void)
+{
+	CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+	CFIndex windowCount;
+	CFIndex i;
+	int result = 0;
+	if (windows == NULL) return 0;
+	windowCount = CFArrayGetCount(windows);
+	for (i = 0; i < windowCount; ++i)
+	{
+		CFDictionaryRef window = (CFDictionaryRef)CFArrayGetValueAtIndex(windows, i);
+		CFNumberRef layerValue = (CFNumberRef)CFDictionaryGetValue(window, kCGWindowLayer);
+		CFStringRef ownerName = (CFStringRef)CFDictionaryGetValue(window, kCGWindowOwnerName);
+		int layer = -1;
+		if (layerValue == NULL || !CFNumberGetValue(layerValue, kCFNumberIntType, &layer) || layer != 0) continue;
+		if (ownerName != NULL && CFStringCompare(ownerName, CFSTR("Simulator"), 0) == kCFCompareEqualTo) result = 1;
+		break;
+	}
+	CFRelease(windows);
+	return result;
+}
+
+static CGEventFlags ModifierFlagForVK(unsigned char vk)
+{
+	switch (vk)
+	{
+		case VK_SHIFT: return kCGEventFlagMaskShift;
+		case VK_CONTROL: return kCGEventFlagMaskControl;
+		case VK_MENU: return kCGEventFlagMaskAlternate;
+		case VK_LWIN:
+		case VK_RWIN: return kCGEventFlagMaskCommand;
+		default: return 0;
+	}
+}
+
+static void UpdateModifierState(unsigned char vk, int up)
+{
+	if (ModifierFlagForVK(vk) == 0) return;
+	g_modifierDown[vk] = up ? 0 : 1;
+	g_modifierFlags = 0;
+	if (g_modifierDown[VK_SHIFT]) g_modifierFlags |= kCGEventFlagMaskShift;
+	if (g_modifierDown[VK_CONTROL]) g_modifierFlags |= kCGEventFlagMaskControl;
+	if (g_modifierDown[VK_MENU]) g_modifierFlags |= kCGEventFlagMaskAlternate;
+	if (g_modifierDown[VK_LWIN] || g_modifierDown[VK_RWIN]) g_modifierFlags |= kCGEventFlagMaskCommand;
+}
+
+static int PhysicalKeyForUnicode(uint16_t unicode, unsigned char *vk, CGEventFlags *flags)
+{
+	*flags = 0;
+	if (unicode >= 'a' && unicode <= 'z') { *vk = (unsigned char)(VK_A + (unicode - 'a')); return 1; }
+	if (unicode >= 'A' && unicode <= 'Z')
+	{
+		*vk = (unsigned char)(VK_A + (unicode - 'A'));
+		*flags = kCGEventFlagMaskShift;
+		return 1;
+	}
+	if (unicode >= '0' && unicode <= '9') { *vk = (unsigned char)(VK_0 + (unicode - '0')); return 1; }
+
+	switch (unicode)
+	{
+		case ' ': *vk = VK_SPACE; return 1;
+		case '\t': *vk = VK_TAB; return 1;
+		case '\r':
+		case '\n': *vk = VK_RETURN; return 1;
+		case ';': *vk = VK_OEM_1; return 1;
+		case ':': *vk = VK_OEM_1; *flags = kCGEventFlagMaskShift; return 1;
+		case '=': *vk = VK_OEM_PLUS; return 1;
+		case '+': *vk = VK_OEM_PLUS; *flags = kCGEventFlagMaskShift; return 1;
+		case ',': *vk = VK_OEM_COMMA; return 1;
+		case '<': *vk = VK_OEM_COMMA; *flags = kCGEventFlagMaskShift; return 1;
+		case '-': *vk = VK_OEM_MINUS; return 1;
+		case '_': *vk = VK_OEM_MINUS; *flags = kCGEventFlagMaskShift; return 1;
+		case '.': *vk = VK_OEM_PERIOD; return 1;
+		case '>': *vk = VK_OEM_PERIOD; *flags = kCGEventFlagMaskShift; return 1;
+		case '/': *vk = VK_OEM_2; return 1;
+		case '?': *vk = VK_OEM_2; *flags = kCGEventFlagMaskShift; return 1;
+		case '`': *vk = VK_OEM_3; return 1;
+		case '~': *vk = VK_OEM_3; *flags = kCGEventFlagMaskShift; return 1;
+		case '[': *vk = VK_OEM_4; return 1;
+		case '{': *vk = VK_OEM_4; *flags = kCGEventFlagMaskShift; return 1;
+		case '\\': *vk = VK_OEM_5; return 1;
+		case '|': *vk = VK_OEM_5; *flags = kCGEventFlagMaskShift; return 1;
+		case ']': *vk = VK_OEM_6; return 1;
+		case '}': *vk = VK_OEM_6; *flags = kCGEventFlagMaskShift; return 1;
+		case '\'': *vk = VK_OEM_7; return 1;
+		case '"': *vk = VK_OEM_7; *flags = kCGEventFlagMaskShift; return 1;
+		case '!': *vk = VK_1; *flags = kCGEventFlagMaskShift; return 1;
+		case '@': *vk = VK_2; *flags = kCGEventFlagMaskShift; return 1;
+		case '#': *vk = VK_3; *flags = kCGEventFlagMaskShift; return 1;
+		case '$': *vk = VK_4; *flags = kCGEventFlagMaskShift; return 1;
+		case '%': *vk = VK_5; *flags = kCGEventFlagMaskShift; return 1;
+		case '^': *vk = VK_6; *flags = kCGEventFlagMaskShift; return 1;
+		case '&': *vk = VK_7; *flags = kCGEventFlagMaskShift; return 1;
+		case '*': *vk = VK_8; *flags = kCGEventFlagMaskShift; return 1;
+		case '(': *vk = VK_9; *flags = kCGEventFlagMaskShift; return 1;
+		case ')': *vk = VK_0; *flags = kCGEventFlagMaskShift; return 1;
+		default: return 0;
+	}
+}
+
+static void PasteUnicode(uint16_t unicode)
+{
+	UniChar characters[2];
+	CFIndex characterCount = 1;
+	CFStringRef string;
+	CFDataRef data;
+	PasteboardRef pasteboard = NULL;
+	FILE *simulatorPasteboard;
+
+	if (unicode >= 0xD800 && unicode <= 0xDBFF)
+	{
+		g_pendingHighSurrogate = unicode;
+		return;
+	}
+	if (unicode >= 0xDC00 && unicode <= 0xDFFF)
+	{
+		if (g_pendingHighSurrogate == 0) return;
+		characters[0] = g_pendingHighSurrogate;
+		characters[1] = unicode;
+		characterCount = 2;
+		g_pendingHighSurrogate = 0;
+	}
+	else
+	{
+		g_pendingHighSurrogate = 0;
+		characters[0] = unicode;
+	}
+
+	string = CFStringCreateWithCharacters(kCFAllocatorDefault, characters, characterCount);
+	if (string == NULL) return;
+	data = CFStringCreateExternalRepresentation(kCFAllocatorDefault, string, kCFStringEncodingUTF8, 0);
+	CFRelease(string);
+	if (data == NULL) return;
+
+	simulatorPasteboard = popen("/usr/bin/xcrun simctl pbcopy booted 2>/dev/null", "w");
+	if (simulatorPasteboard != NULL)
+	{
+		fwrite(CFDataGetBytePtr(data), 1, (size_t)CFDataGetLength(data), simulatorPasteboard);
+		pclose(simulatorPasteboard);
+	}
+
+	if (PasteboardCreate(kPasteboardClipboard, &pasteboard) == noErr)
+	{
+		PasteboardSynchronize(pasteboard);
+		PasteboardClear(pasteboard);
+		if (PasteboardPutItemFlavor(pasteboard, (PasteboardItemID)1, kUTTypeUTF8PlainText, data, 0) == noErr)
+		{
+			KeyAction(VK_LWIN, 0);
+			KeyAction(VK_V, 0);
+			KeyAction(VK_V, 1);
+			KeyAction(VK_LWIN, 1);
+			usleep(30000);
+		}
+		CFRelease(pasteboard);
+	}
+	CFRelease(data);
+}
 
 static struct keymap_t g_keymap[] = {
 	{ kVK_Space,		 VK_SPACE },
@@ -293,7 +455,7 @@ void KeyAction(unsigned char vk, int up)
 	CGEventSourceRef source;
 	if (up == 4) { up = 0; }
 
-	source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+	source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
 	for (i = 0 ; i < g_keymapLen; i++) {
 		if (g_keymap[i].vk == vk) {
 			keycode = g_keymap[i].keycode;
@@ -304,8 +466,12 @@ void KeyAction(unsigned char vk, int up)
 	if (i == g_keymapLen) { return; }
 	if (vk == VK_CAPITAL && up) { g_capsLock = g_capsLock ? 0 : 1; }
 
+	UpdateModifierState(vk, up);
 	CGEventRef key = CGEventCreateKeyboardEvent(source, keycode, !up);
-	if (g_capsLock) { CGEventSetFlags(key, kCGEventFlagMaskAlphaShift); }
+	/* The character event must carry the active synthetic modifier flags.
+	 * Relying on Quartz to infer them from a previous event is unreliable in
+	 * applications such as iOS Simulator. */
+	CGEventSetFlags(key, g_modifierFlags | (g_capsLock ? kCGEventFlagMaskAlphaShift : 0));
 	CGEventPost(kCGHIDEventTap, key);
 	CFRelease(key);
 
@@ -313,12 +479,54 @@ void KeyAction(unsigned char vk, int up)
 }
 void KeyActionUnicode(uint16_t unicode, int up)
 {
-	if (up == 0)
+	CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+	CGEventRef key;
+	unsigned char vk;
+	CGEventFlags unicodeFlags = 0;
+	int i;
+
+	if (!IsSimulatorFrontmost())
 	{
-		//ILIBLOGMESSAGEX("UNICODE: %u [%d]", unicode, up);
-		CGEventRef key = CGEventCreateKeyboardEvent(NULL, 0, true);
+		key = CGEventCreateKeyboardEvent(source, 0, up == 0);
 		CGEventKeyboardSetUnicodeString(key, 1, (UniChar*)&unicode);
-		CGEventPost(kCGHIDEventTap, key);
-		CFRelease(key);
+		CGEventSetFlags(key, g_modifierFlags);
 	}
+	else if (PhysicalKeyForUnicode(unicode, &vk, &unicodeFlags))
+	{
+		for (i = 0; i < g_keymapLen; i++) { if (g_keymap[i].vk == vk) break; }
+		if (i == g_keymapLen) { if (source != NULL) CFRelease(source); return; }
+		if ((unicodeFlags & kCGEventFlagMaskShift) != 0 && up == 0 && !g_modifierDown[VK_SHIFT])
+		{
+			KeyAction(VK_SHIFT, 0);
+			g_unicodeShiftInjected = 1;
+		}
+		key = CGEventCreateKeyboardEvent(source, g_keymap[i].keycode, up == 0);
+		CGEventSetFlags(key, g_modifierFlags | unicodeFlags);
+	}
+	else
+	{
+		if (source != NULL) CFRelease(source);
+		if (up == 0) PasteUnicode(unicode);
+		return;
+	}
+	CGEventPost(kCGHIDEventTap, key);
+	CFRelease(key);
+	if (source != NULL) CFRelease(source);
+	if ((unicodeFlags & kCGEventFlagMaskShift) != 0 && up != 0 && g_unicodeShiftInjected)
+	{
+		g_unicodeShiftInjected = 0;
+		KeyAction(VK_SHIFT, 1);
+	}
+}
+
+void KeyActionReleaseAll(void)
+{
+	/* Safe to call repeatedly on EOF, reconnect and process shutdown. */
+	KeyAction(VK_SHIFT, 1);
+	KeyAction(VK_CONTROL, 1);
+	KeyAction(VK_MENU, 1);
+	KeyAction(VK_LWIN, 1);
+	KeyAction(VK_RWIN, 1);
+	memset(g_modifierDown, 0, sizeof(g_modifierDown));
+	g_modifierFlags = 0;
 }

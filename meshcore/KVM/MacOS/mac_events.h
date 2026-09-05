@@ -378,5 +378,6 @@ struct keymap_t {
 extern void MouseAction(double absX, double absY, int button, short wheel);
 extern void KeyAction(unsigned char vk, int up);
 extern void KeyActionUnicode(uint16_t unicode, int up);
+extern void KeyActionReleaseAll(void);
 
 #endif /* LINUX_EVENTS_H_ */

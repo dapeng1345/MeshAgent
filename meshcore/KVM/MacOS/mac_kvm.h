@@ -27,6 +27,7 @@
 typedef ILibTransport_DoneState(*ILibKVM_WriteHandler)(char *buffer, int bufferLen, void *reserved);
 
 void kvm_check_permission();
+void kvm_check_kvm_permissions();
 
 int kvm_relay_feeddata(char* buf, int len);
 void kvm_pause(int pause);
@@ -35,4 +36,3 @@ void kvm_relay_reset();
 void kvm_cleanup();
 
 #endif /* LINUX_KVM_H_ */
-
