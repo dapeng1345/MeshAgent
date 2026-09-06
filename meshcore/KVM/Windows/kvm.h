@@ -24,6 +24,7 @@ void kvm_pause(int pause);
 int kvm_relay_setup(char* exePath, void *processPipeMgr, ILibKVM_WriteHandler writeHandler, void *reserved, int tsid);
 void kvm_cleanup();
 void kvm_setupSasPermissions();
+void kvm_start_idle_watchdog();
 void kvm_relay_reset(ILibKVM_WriteHandler writeHandler, void *reserved);
 void kvm_server_SetResolution(ILibKVM_WriteHandler writeHandler, void *reserved);
 
