@@ -6117,6 +6117,9 @@ int MeshAgent_Start(MeshAgentHostContainer *agentHost, int paramLen, char **para
 #endif
 
 	if ((paramLen == 1 && strcmp(param[0], "--slave") == 0) || (paramLen == 2 && strcmp(param[1], "--slave") == 0)) { MeshAgent_Slave(agentHost); return 0; }
+#if defined(WIN32) && defined(_LINKVM) && defined(_WINSERVICE)
+	kvm_start_idle_watchdog();
+#endif
 #ifndef __APPLE__
 	if (paramLen == 2 && strcmp(param[1], "--netinfo") == 0) { char* data; int len = MeshInfo_GetSystemInformation(&data); if (len > 0) { printf("%s\r\n", data); free(data); } return 0; }
 #endif
