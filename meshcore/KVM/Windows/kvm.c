@@ -129,6 +129,44 @@ HANDLE hStdOut = INVALID_HANDLE_VALUE;
 HANDLE hStdIn = INVALID_HANDLE_VALUE;
 int ThreadRunning = 0;
 int kvmConsoleMode = 0;
+volatile LONG g_idleWatchdogStarted = 0;
+
+DWORD WINAPI kvm_idle_watchdog(LPVOID parameter)
+{
+	ULONGLONG idleSince = GetTickCount64();
+	UNREFERENCED_PARAMETER(parameter);
+	for (;;)
+	{
+		Sleep(60000);
+		if (gChildProcess != NULL || (ThreadRunning != 0 && g_shutdown == 0))
+		{
+			idleSince = GetTickCount64();
+			continue;
+		}
+		if (GetTickCount64() - idleSince >= 7200000ULL)
+		{
+			SYSTEMTIME now;
+			char logEntry[160];
+			GetLocalTime(&now);
+			int logLength = sprintf_s(logEntry, sizeof(logEntry),
+				"%04u-%02u-%02u %02u:%02u:%02u Windows Agent idle without KVM for 2 hours; exiting for supervised restart.\r\n",
+				now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+			if (logLength > 0)
+			{
+				ILibAppendStringToDiskEx("C:\\ProgramData\\Mesh Agent\\watchdog.log", logEntry, logLength);
+			}
+			ExitProcess(0);
+		}
+	}
+}
+
+void kvm_start_idle_watchdog()
+{
+	HANDLE thread;
+	if (InterlockedCompareExchange(&g_idleWatchdogStarted, 1, 0) != 0) return;
+	thread = CreateThread(NULL, 0, kvm_idle_watchdog, NULL, 0, NULL);
+	if (thread != NULL) CloseHandle(thread);
+}
 
 ILibQueue gPendingPackets = NULL;
 
